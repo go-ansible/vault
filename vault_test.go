@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,6 +85,140 @@ func TestLineWrap(t *testing.T) {
 		if len(l) > lineWrap {
 			t.Fatalf("body line %d is %d chars, want <= %d", i, len(l), lineWrap)
 		}
+	}
+}
+
+func TestIsVaultNoTrailingNewline(t *testing.T) {
+	// firstLine's no-'\n'-found branch: the whole input is the header.
+	if !IsVault([]byte(headerPrefix + ";1.1;AES256")) {
+		t.Fatal("IsVault reports false on a header-only payload with no trailing newline")
+	}
+}
+
+func TestSplitHeaderNoNewline(t *testing.T) {
+	// splitHeader's nl<0 branch: a vault text that is only a header line,
+	// with no body and no trailing newline.
+	id, err := VaultID(headerPrefix + ";1.1;AES256;myvault")
+	if err != nil {
+		t.Fatalf("VaultID: %v", err)
+	}
+	if id != "myvault" {
+		t.Fatalf("VaultID = %q, want %q", id, "myvault")
+	}
+}
+
+func TestSplitHeaderTooFewFields(t *testing.T) {
+	if _, err := VaultID(headerPrefix + ";1.1"); err != ErrNotVault {
+		t.Fatalf("VaultID on header with too few fields: got %v, want ErrNotVault", err)
+	}
+}
+
+func TestVaultIDError(t *testing.T) {
+	if _, err := VaultID("plain: yaml\n"); err != ErrNotVault {
+		t.Fatalf("VaultID on non-vault: got %v, want ErrNotVault", err)
+	}
+}
+
+func TestFormatVersion(t *testing.T) {
+	enc, err := Encrypt([]byte("x"), "pw", "")
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	v, err := FormatVersion(enc)
+	if err != nil {
+		t.Fatalf("FormatVersion: %v", err)
+	}
+	if v != "1.1" {
+		t.Fatalf("FormatVersion = %q, want %q", v, "1.1")
+	}
+	if _, err := FormatVersion("plain: yaml\n"); err != ErrNotVault {
+		t.Fatalf("FormatVersion on non-vault: got %v, want ErrNotVault", err)
+	}
+}
+
+func TestDecryptMalformed(t *testing.T) {
+	header := headerPrefix + ";1.1;AES256"
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "unsupported cipher",
+			body: "",
+			want: "unsupported cipher",
+		},
+		{
+			name: "invalid outer hex",
+			body: "not-valid-hex!!",
+			want: "malformed body",
+		},
+		{
+			name: "wrong part count",
+			body: hex.EncodeToString([]byte("justonepart")),
+			want: "expected salt/hmac/ciphertext",
+		},
+		{
+			name: "malformed salt",
+			body: hex.EncodeToString([]byte("nothexsalt\ndeadbeef\ncafebabe")),
+			want: "malformed salt",
+		},
+		{
+			name: "malformed ciphertext",
+			body: hex.EncodeToString([]byte(hex.EncodeToString([]byte{0x01, 0x02}) + "\n" + "dummyhmac" + "\n" + "zz-not-hex")),
+			want: "malformed ciphertext",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hdr := header
+			if c.name == "unsupported cipher" {
+				hdr = headerPrefix + ";1.1;AES128"
+			}
+			text := hdr + "\n" + c.body + "\n"
+			_, err := Decrypt(text, "pw")
+			if err == nil {
+				t.Fatalf("Decrypt(%q): got nil error, want one containing %q", text, c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Decrypt(%q): err = %q, want it to contain %q", text, err, c.want)
+			}
+		})
+	}
+}
+
+func TestPkcs7Unpad(t *testing.T) {
+	cases := []struct {
+		name      string
+		data      []byte
+		blockSize int
+		wantErr   bool
+		want      string
+	}{
+		{"empty", nil, 16, true, ""},
+		{"not a multiple of block size", []byte("123456789012345"), 16, true, ""}, // 15 bytes
+		{"pad length zero", append([]byte("0123456789012345"[:15]), 0x00), 16, true, ""},
+		{"pad length exceeds block size", append([]byte("0123456789012345"[:15]), 0x11), 16, true, ""},
+		{"pad bytes inconsistent", append([]byte("01234567890"), 0x01, 0x02, 0x03, 0x04, 0x05), 16, true, ""},
+		{"valid padding", append([]byte("hello"), 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b), 16, false, "hello"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := pkcs7Unpad(c.data, c.blockSize)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("pkcs7Unpad(%v, %d): got nil error, want one", c.data, c.blockSize)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("pkcs7Unpad(%v, %d): %v", c.data, c.blockSize, err)
+			}
+			if string(got) != c.want {
+				t.Fatalf("pkcs7Unpad = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
