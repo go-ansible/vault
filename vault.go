@@ -239,3 +239,23 @@ func FormatVersion(vaultText string) (string, error) {
 	}
 	return h.version, nil
 }
+
+// MaybeDecrypt returns data unchanged when it is not vault-encrypted, and
+// its plaintext when it is. It exists so a caller that reads YAML files —
+// an inventory, a playbook, a vars file — can support encrypted ones by
+// piping every read through here, which is how real Ansible handles them:
+// any file it loads may be encrypted, and nothing about the call site
+// says in advance whether this one is.
+//
+// A vault-encrypted file with no password is an error rather than a
+// silent pass-through, since returning the ciphertext as if it were
+// content would surface much later as an unreadable YAML parse.
+func MaybeDecrypt(data []byte, password string) ([]byte, error) {
+	if !IsVault(data) {
+		return data, nil
+	}
+	if password == "" {
+		return nil, fmt.Errorf("vault: content is encrypted but no vault password was supplied")
+	}
+	return Decrypt(string(data), password)
+}

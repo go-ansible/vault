@@ -295,3 +295,40 @@ func TestInteropEncryptReference(t *testing.T) {
 		t.Fatalf("reference decrypt of our output mismatch: got %q want %q", out, plaintext)
 	}
 }
+
+func TestMaybeDecrypt(t *testing.T) {
+	plain := []byte("secret_value: s3cr3t\n")
+	enc, err := Encrypt(plain, "pw", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Not encrypted: returned untouched, no password needed.
+	got, err := MaybeDecrypt(plain, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(plain) {
+		t.Errorf("plaintext = %q, want it untouched", got)
+	}
+
+	// Encrypted: decrypted with the password.
+	got, err = MaybeDecrypt([]byte(enc), "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(plain) {
+		t.Errorf("decrypted = %q, want %q", got, plain)
+	}
+
+	// Encrypted with no password is an error, not a pass-through — the
+	// ciphertext must never be handed back as if it were content.
+	if _, err := MaybeDecrypt([]byte(enc), ""); err == nil {
+		t.Error("encrypted content with no password: got nil error, want one")
+	}
+
+	// Wrong password stays an error.
+	if _, err := MaybeDecrypt([]byte(enc), "wrong"); err == nil {
+		t.Error("wrong password: got nil error, want one")
+	}
+}
