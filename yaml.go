@@ -2,6 +2,7 @@ package vault
 
 import (
 	"fmt"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +36,10 @@ func UnmarshalYAML(data []byte, password string, out any) error {
 	if err := yaml.Unmarshal(plain, &root); err != nil {
 		return err
 	}
+	// BEFORE decrypting, deliberately: a !vault scalar decrypts to a
+	// string and real Ansible never re-resolves it, so a secret whose
+	// plaintext happens to be "no" must stay the string "no".
+	resolveYAML11Bools(&root)
 	if err := decryptNodes(&root, password); err != nil {
 		return err
 	}
@@ -43,6 +48,55 @@ func UnmarshalYAML(data []byte, password string, out any) error {
 		return nil
 	}
 	return root.Decode(out)
+}
+
+// yaml11Bools is PyYAML's own implicit bool resolver, which real
+// Ansible inherits — its pattern read straight out of
+// yaml.resolver.Resolver at runtime rather than copied from the spec:
+//
+//	yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF
+//
+// Note what is NOT there: bare y and n. PyYAML leaves those as
+// strings, and so does this — confirmed by running a playbook rather
+// than by reading the YAML 1.1 spec, which does list them.
+var yaml11Bools = map[string]bool{
+	"yes": true, "Yes": true, "YES": true,
+	"no": false, "No": false, "NO": false,
+	"true": true, "True": true, "TRUE": true,
+	"false": false, "False": false, "FALSE": false,
+	"on": true, "On": true, "ON": true,
+	"off": false, "Off": false, "OFF": false,
+}
+
+// resolveYAML11Bools retags every PLAIN (unquoted) scalar that PyYAML
+// would read as a boolean. gopkg.in/yaml.v3 implements YAML 1.2, whose
+// core schema knows only true/false, so "yes" arrived as the string
+// "yes" where real Ansible has the boolean True.
+//
+// That is not cosmetic. `when: some_flag` with `some_flag: yes` FAILED
+// here — "Conditional result was derived from value of type str" —
+// on a playbook real Ansible runs, and any module argument written
+// `force: yes` reached the module as a string.
+//
+// Quoted scalars are left alone, which is the whole point of the
+// style check: "yes" and 'yes' are strings in both YAML versions, and
+// that is how a playbook asks for the word.
+func resolveYAML11Bools(n *yaml.Node) {
+	if n.Kind == yaml.ScalarNode {
+		if n.Tag == "!!str" && n.Style == 0 {
+			if b, ok := yaml11Bools[n.Value]; ok {
+				n.Tag = "!!bool"
+				// Normalised rather than left as "yes": yaml.v3's own
+				// bool decoder is a YAML 1.2 one and need not accept
+				// every spelling we just admitted.
+				n.Value = strconv.FormatBool(b)
+			}
+		}
+		return
+	}
+	for _, child := range n.Content {
+		resolveYAML11Bools(child)
+	}
 }
 
 // vaultTag is the YAML tag real Ansible marks an encrypted scalar with.
