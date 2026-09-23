@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -105,5 +106,77 @@ func TestUnmarshalYAMLWholeFileAndPlaintext(t *testing.T) {
 	var empty map[string]any
 	if err := UnmarshalYAML(nil, "", &empty); err != nil {
 		t.Errorf("empty document: %v", err)
+	}
+}
+
+// TestYAML11Bools pins PyYAML's implicit bool set, which real Ansible
+// inherits and gopkg.in/yaml.v3 (a YAML 1.2 parser) does not. Every
+// expectation here was MEASURED by running a playbook through real
+// ansible-core 2.21.4 and printing `value | type_debug`, not read off
+// the YAML 1.1 spec — which is how the bare y/n case was caught: the
+// spec lists them, PyYAML does not resolve them.
+func TestYAML11Bools(t *testing.T) {
+	var got map[string]any
+	if err := UnmarshalYAML([]byte(`
+a_yes: yes
+a_Yes: Yes
+a_YES: YES
+a_no: no
+a_No: No
+a_NO: NO
+a_on: on
+a_off: off
+a_true: true
+a_FALSE: FALSE
+a_y: y
+a_n: n
+quoted: "yes"
+single: 'no'
+in_a_list: [yes, "yes", no]
+nested: {k: on}
+word: yesterday
+`), "", &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key  string
+		want any
+	}{
+		{"a_yes", true}, {"a_Yes", true}, {"a_YES", true},
+		{"a_no", false}, {"a_No", false}, {"a_NO", false},
+		{"a_on", true}, {"a_off", false},
+		{"a_true", true}, {"a_FALSE", false},
+		// PyYAML does NOT resolve bare y/n, whatever the spec says.
+		{"a_y", "y"}, {"a_n", "n"},
+		// Quoting is how a playbook asks for the word, in both YAML
+		// versions — so both of these stay strings.
+		{"quoted", "yes"}, {"single", "no"},
+		// And a word that merely starts with one is untouched.
+		{"word", "yesterday"},
+	} {
+		if got[tc.key] != tc.want {
+			t.Errorf("%s = %#v, want %#v", tc.key, got[tc.key], tc.want)
+		}
+	}
+	if want := []any{true, "yes", false}; !reflect.DeepEqual(got["in_a_list"], want) {
+		t.Errorf("in_a_list = %#v, want %#v", got["in_a_list"], want)
+	}
+	if nested, _ := got["nested"].(map[string]any); nested == nil || nested["k"] != true {
+		t.Errorf("nested = %#v, want k:true", got["nested"])
+	}
+}
+
+// TestYAML11BoolsDoNotReachDecryptedSecrets: a !vault scalar decrypts
+// to a string and real Ansible never re-resolves it, so a secret whose
+// plaintext is "no" must stay the string "no" rather than becoming
+// false. The resolution therefore runs BEFORE decryption, not after.
+func TestYAML11BoolsDoNotReachDecryptedSecrets(t *testing.T) {
+	doc := inlineDoc(t, "secret", "no", "pw")
+	var got map[string]any
+	if err := UnmarshalYAML([]byte(doc), "pw", &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["secret"] != "no" {
+		t.Errorf("secret = %#v, want the string \"no\"", got["secret"])
 	}
 }
