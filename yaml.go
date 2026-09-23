@@ -189,3 +189,16 @@ func decryptNodes(n *yaml.Node, password string) error {
 	}
 	return nil
 }
+
+// ResolveYAML11 applies PyYAML's implicit scalar resolution to an
+// already-parsed node tree: yes/no/on/off become booleans and base-60
+// scalars become numbers, as they do in real Ansible.
+//
+// UnmarshalYAML does this for anything it decodes. This is for a
+// caller that parses the YAML itself — the inventory reader walks
+// nodes directly, to keep the order hosts were written in, and
+// without this its vars would be the only ones in the port still
+// reading yes as a string.
+//
+// Safe to call on a document node; it descends into everything.
+func ResolveYAML11(n *yaml.Node) { resolveYAML11Bools(n) }
