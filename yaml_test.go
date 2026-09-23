@@ -180,3 +180,56 @@ func TestYAML11BoolsDoNotReachDecryptedSecrets(t *testing.T) {
 		t.Errorf("secret = %#v, want the string \"no\"", got["secret"])
 	}
 }
+
+// TestYAML11Sexagesimal pins PyYAML's base-60 scalars against values
+// produced by the REFERENCE interpreter, not by reading YAML 1.1.
+// Real Ansible parses with PyYAML, so a duration written this way is
+// a NUMBER there and was the string "1:30" here.
+//
+// The two resolvers differ in their FIRST group, which is easy to miss
+// and changes the answer: an int may not start with 0 while a float
+// may.
+func TestYAML11Sexagesimal(t *testing.T) {
+	var got map[string]any
+	if err := UnmarshalYAML([]byte(`
+a: 1:30
+b: 1:30:30
+c: -1:30
+d: +1:30
+e: 12:00
+f: 190:20:30
+g: 1:2:3
+h: 1_0:30
+i: 1:0
+notint: 0:59
+over59: 1:60
+flt: 1:30.5
+fltzero: 0:30.5
+flttrail: 1:30.
+plain: 59
+quoted: "1:30"
+word: a:30
+`), "", &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key  string
+		want any
+	}{
+		{"a", 90}, {"b", 5430}, {"c", -90}, {"d", 90},
+		{"e", 720}, {"f", 685230}, {"g", 3723},
+		{"h", 630}, // underscores are stripped, as they are in any YAML 1.1 int
+		{"i", 60},
+		// An INT may not start with 0, and no group may exceed 59.
+		{"notint", "0:59"}, {"over59", "1:60"},
+		{"flt", 90.5}, {"fltzero", 30.5}, {"flttrail", 90.0},
+		{"plain", 59},
+		// Quoting is how a playbook asks for the text, here as
+		// everywhere.
+		{"quoted", "1:30"}, {"word", "a:30"},
+	} {
+		if got[tc.key] != tc.want {
+			t.Errorf("%s = %#v, want %#v", tc.key, got[tc.key], tc.want)
+		}
+	}
+}

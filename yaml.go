@@ -2,7 +2,9 @@ package vault
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -68,6 +70,59 @@ var yaml11Bools = map[string]bool{
 	"off": false, "Off": false, "OFF": false,
 }
 
+// sexagesimalInt and sexagesimalFloat are PyYAML's own implicit
+// resolvers for base-60 numbers, the last alternative of each of its
+// int and float patterns — read out of yaml.resolver.Resolver at
+// runtime, like the bool set above.
+//
+// The two differ in their FIRST group, which is easy to miss and
+// changes the answer: an int may not start with 0 ("0:59" stays a
+// string) while a float may ("0:30.5" is 30.5). Every following group
+// is 0-59, so "1:60" is a string too.
+var (
+	sexagesimalInt   = regexp.MustCompile(`^[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+$`)
+	sexagesimalFloat = regexp.MustCompile(`^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$`)
+)
+
+// sexagesimal converts a YAML 1.1 base-60 scalar — "1:30" is 90,
+// "1:30:30" is 5430 — reporting whether it was one at all and whether
+// it is an integer.
+//
+// YAML 1.1 is what real Ansible parses with, so a playbook carrying a
+// duration written this way means a NUMBER there and meant the string
+// "1:30" here.
+func sexagesimal(raw string) (value string, isInt bool, ok bool) {
+	switch {
+	case sexagesimalInt.MatchString(raw):
+		isInt = true
+	case sexagesimalFloat.MatchString(raw):
+	default:
+		return "", false, false
+	}
+
+	s := strings.ReplaceAll(raw, "_", "")
+	sign := 1.0
+	if s[0] == '-' || s[0] == '+' {
+		if s[0] == '-' {
+			sign = -1
+		}
+		s = s[1:]
+	}
+	total := 0.0
+	for _, part := range strings.Split(s, ":") {
+		n, err := strconv.ParseFloat(part, 64)
+		if err != nil {
+			return "", false, false
+		}
+		total = total*60 + n
+	}
+	total *= sign
+	if isInt {
+		return strconv.FormatInt(int64(total), 10), true, true
+	}
+	return strconv.FormatFloat(total, 'f', -1, 64), false, true
+}
+
 // resolveYAML11Bools retags every PLAIN (unquoted) scalar that PyYAML
 // would read as a boolean. gopkg.in/yaml.v3 implements YAML 1.2, whose
 // core schema knows only true/false, so "yes" arrived as the string
@@ -90,6 +145,15 @@ func resolveYAML11Bools(n *yaml.Node) {
 				// bool decoder is a YAML 1.2 one and need not accept
 				// every spelling we just admitted.
 				n.Value = strconv.FormatBool(b)
+				return
+			}
+			if value, isInt, ok := sexagesimal(n.Value); ok {
+				if isInt {
+					n.Tag = "!!int"
+				} else {
+					n.Tag = "!!float"
+				}
+				n.Value = value
 			}
 		}
 		return
