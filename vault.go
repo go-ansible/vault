@@ -47,6 +47,17 @@ var ErrNotVault = errors.New("vault: not an ansible-vault payload")
 // almost always a wrong password.
 var ErrHMACMismatch = errors.New("vault: HMAC verification failed (wrong password?)")
 
+// ErrNoPassword is returned when the content IS encrypted and no
+// password was supplied — a different thing from a wrong one, and a
+// caller usually wants to tell them apart.
+//
+// It exists as a sentinel so a caller can classify the failure without
+// matching on message text. go-ansible/cli needs exactly that: real
+// Ansible exits 1 for a vault failure and 4 for a parse error
+// (measured, both ways), and this port returned 4 for both because the
+// CLI could only see "ParseFileWithVault returned an error".
+var ErrNoPassword = errors.New("vault: content is encrypted but no vault password was supplied")
+
 // IsVault reports whether data begins with a recognized vault header,
 // with or without a leading vault-id.
 func IsVault(data []byte) bool {
@@ -255,7 +266,7 @@ func MaybeDecrypt(data []byte, password string) ([]byte, error) {
 		return data, nil
 	}
 	if password == "" {
-		return nil, fmt.Errorf("vault: content is encrypted but no vault password was supplied")
+		return nil, ErrNoPassword
 	}
 	return Decrypt(string(data), password)
 }

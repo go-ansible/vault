@@ -3,6 +3,7 @@ package vault
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -336,5 +337,35 @@ func TestMaybeDecrypt(t *testing.T) {
 	// Wrong password stays an error.
 	if _, err := MaybeDecrypt([]byte(enc), "wrong"); err == nil {
 		t.Error("wrong password: got nil error, want one")
+	}
+}
+
+// TestMaybeDecryptNoPasswordIsASentinel pins ErrNoPassword as matchable
+// with errors.Is, which is the whole reason it exists: go-ansible/cli
+// must tell a VAULT failure (real exits 1) from a PARSE failure (real
+// exits 4), and matching on message text is not a classification.
+func TestMaybeDecryptNoPasswordIsASentinel(t *testing.T) {
+	enc, err := Encrypt([]byte("k: v\n"), "pw", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = MaybeDecrypt([]byte(enc), "")
+	if !errors.Is(err, ErrNoPassword) {
+		t.Fatalf("want ErrNoPassword, got %v", err)
+	}
+	// And a WRONG password is the other sentinel, not this one -- the
+	// two cases are different and a caller may well report them
+	// differently.
+	_, err = MaybeDecrypt([]byte(enc), "wrong")
+	if errors.Is(err, ErrNoPassword) {
+		t.Errorf("a wrong password reported ErrNoPassword: %v", err)
+	}
+	if !errors.Is(err, ErrHMACMismatch) {
+		t.Errorf("want ErrHMACMismatch for a wrong password, got %v", err)
+	}
+	// Unencrypted content is neither: it passes through.
+	out, err := MaybeDecrypt([]byte("k: v\n"), "")
+	if err != nil || string(out) != "k: v\n" {
+		t.Errorf("plain content should pass through: %q, %v", out, err)
 	}
 }
