@@ -225,7 +225,8 @@ func TestPkcs7Unpad(t *testing.T) {
 
 // ansibleVault locates a real ansible-vault binary for cross-validation
 // against this package's own implementation. Tests using it skip cleanly
-// when none is available (e.g. in CI, which does not install Python).
+// when none is available locally; the CI lane installs ansible-core and
+// sets ANSIBLE_REQUIRE, which turns that skip into a failure.
 func ansibleVault(t *testing.T) string {
 	t.Helper()
 	if p := os.Getenv("ANSIBLE_VAULT_BIN"); p != "" {
